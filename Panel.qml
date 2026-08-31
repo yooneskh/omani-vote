@@ -107,6 +107,13 @@ Panel {
       token: root.token,
       user: root.user
     }))
+    root.lockStateFile()
+  }
+
+  function lockStateFile() {
+    if (stateLockProc.running) stateLockProc.running = false
+    stateLockProc.command = ["chmod", "600", stateFile.path]
+    stateLockProc.running = true
   }
 
   function applyState(raw) {
@@ -188,7 +195,9 @@ Panel {
     root.requestKind = kind
     root.busy = true
     root.errorText = ""
-    requestProc.command = Api.curlCommand(spec)
+    requestProc.stdinEnabled = true
+    requestProc.payload = Api.curlConfig(spec)
+    requestProc.command = Api.curlCommand()
     requestProc.running = true
   }
 
@@ -488,17 +497,31 @@ Panel {
     path: Quickshell.env("HOME") + "/.local/state/omarchy/yooneskh.omani-vote.json"
     watchChanges: true
     atomicWrites: true
-    onLoaded: root.applyState(text())
+    onLoaded: {
+      root.applyState(text())
+      root.lockStateFile()
+    }
     onLoadFailed: root.saveState()
   }
 
   Process {
     id: requestProc
+    property string payload: ""
+    stdinEnabled: true
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.handleResponse(this.text)
     }
     stderr: StdioCollector { waitForEnd: true }
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+  }
+
+  Process {
+    id: stateLockProc
   }
 
   Timer {
@@ -754,6 +777,7 @@ Panel {
               Text {
                 visible: !!(root.featured && root.featured.body)
                 width: parent.width
+                textFormat: Text.PlainText
                 text: root.featured ? Model.excerpt(root.featured.body, 180) : ""
                 color: root.dim
                 wrapMode: Text.WordWrap
@@ -916,6 +940,7 @@ Panel {
             Text {
               visible: root.filterText !== ""
               width: parent.width
+              textFormat: Text.PlainText
               text: "Filter  ·  " + root.filterText
               color: root.dim
               elide: Text.ElideRight

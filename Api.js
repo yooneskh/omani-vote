@@ -41,19 +41,34 @@ function joinUrl(base, path, query) {
   return parts.length ? url + "?" + parts.join("&") : url
 }
 
-function curlCommand(args) {
-  var cmd = ["curl", "-sS", "--max-time", "8", "-w", "\n__STATUS__%{http_code}"]
-  if (args.method && args.method !== "GET") cmd.push("-X", args.method)
-  if (args.token) cmd.push("-H", "authorization: " + args.token)
+function escapeCurlConfig(value) {
+  return String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")
+}
+
+function curlCommand() {
+  return [
+    "curl", "-sS", "--max-time", "8", "--max-filesize", "1048576",
+    "-w", "\n__STATUS__%{http_code}",
+    "-K", "-"
+  ]
+}
+
+function curlConfig(args) {
+  var lines = []
+  if (args.method && args.method !== "GET")
+    lines.push('request = "' + escapeCurlConfig(args.method) + '"')
+  if (args.token)
+    lines.push('header = "authorization: ' + escapeCurlConfig(args.token) + '"')
   if (args.headers) {
-    for (var key in args.headers) cmd.push("-H", key + ": " + args.headers[key])
+    for (var key in args.headers)
+      lines.push('header = "' + escapeCurlConfig(key + ": " + args.headers[key]) + '"')
   }
   if (args.body !== undefined) {
-    cmd.push("-H", "content-type: application/json")
-    cmd.push("--data-binary", JSON.stringify(args.body))
+    lines.push('header = "content-type: application/json"')
+    lines.push('data-binary = "' + escapeCurlConfig(JSON.stringify(args.body)) + '"')
   }
-  cmd.push(args.url)
-  return cmd
+  lines.push('url = "' + escapeCurlConfig(args.url) + '"')
+  return lines.join("\n") + "\n"
 }
 
 function parseCurl(raw) {
@@ -91,6 +106,7 @@ if (typeof module !== "undefined") {
     serializeState: serializeState,
     joinUrl: joinUrl,
     curlCommand: curlCommand,
+    curlConfig: curlConfig,
     parseCurl: parseCurl
   }
 }
