@@ -1,10 +1,10 @@
-# OmaniVote
+# Omani Vote
 
-![OmaniVote](preview.png)
+![Omani Vote](preview.png)
 
 A daily board for Omarchy ideas. Submit a feature or a fix, upvote what you want next, and leave a comment. Each day, one idea is featured on the first screen.
 
-Browse is public. Voting, commenting, and submitting need an OmaniVote account.
+Browse is public. Voting, commenting, and submitting need an Omani Vote account.
 
 ## Install
 

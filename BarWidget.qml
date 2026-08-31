@@ -57,7 +57,7 @@ BarWidget {
     anchors.fill: parent
     bar: root.bar
     text: root.label
-    tooltipText: panelLoader.item && panelLoader.item.tooltipText ? panelLoader.item.tooltipText : "OmaniVote"
+    tooltipText: panelLoader.item && panelLoader.item.tooltipText ? panelLoader.item.tooltipText : "Omani Vote"
 
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()

@@ -55,7 +55,7 @@ Panel {
   property bool cursorActive: false
 
   readonly property string label: featured ? ("✦ " + featured.voteCount) : "✦"
-  readonly property string tooltipText: featured ? (Model.ideaName(featured) || "OmaniVote") : "OmaniVote"
+  readonly property string tooltipText: featured ? (Model.ideaName(featured) || "Omani Vote") : "Omani Vote"
   readonly property bool formFocused: titleField.activeFocus || bodyField.activeFocus
     || loginUserField.activeFocus || loginPassField.activeFocus || loginCaptchaField.activeFocus
     || registerNameField.activeFocus || registerUserField.activeFocus || registerPassField.activeFocus
@@ -568,7 +568,7 @@ Panel {
 
               Text {
                 textFormat: Text.PlainText
-                text: "OMANIVOTE"
+                text: "OMANI VOTE"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1282,7 +1282,7 @@ Panel {
             Text {
               width: parent.width
               textFormat: Text.PlainText
-              text: "Use your OmaniVote account."
+              text: "Use your Omani Vote account."
               color: root.dim
               wrapMode: Text.WordWrap
               font.family: root.fontFamily
