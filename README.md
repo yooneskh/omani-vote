@@ -9,13 +9,7 @@ Browse is public. Voting, commenting, and submitting need an OmaniVote account.
 ## Install
 
 ```sh
-omarchy plugin add <repo-url> --enable
-```
-
-The widget lands on the right of the bar. Move it with:
-
-```sh
-omarchy bar move yooneskh.omani-vote --section right
+omarchy plugin add https://github.com/yooneskh/omani-vote.git --enable
 ```
 
 ## Usage
