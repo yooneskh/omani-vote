@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "yooneskh.omani-vote",
+  "name": "OmaniVote",
+  "version": "1.0.0",
+  "author": "Yoones Khoshghadam",
+  "license": "MIT",
+  "description": "Submit Omarchy ideas, upvote them, and see one featured each day.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaniVote",
+    "description": "Daily featured Omarchy idea with voting and comments",
+    "category": "Community",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
