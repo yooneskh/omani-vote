@@ -51,6 +51,9 @@ Panel {
   property string errorText: ""
   property bool busy: false
   property string requestKind: ""
+  property int requestGen: 0
+  property int activeGen: 0
+  property var pendingRequest: null
   property int selectedIndex: 0
   property bool cursorActive: false
 
@@ -101,19 +104,20 @@ Panel {
       root.bar.centerHoverRevealSuppressed = value
   }
 
+  function pluginFile(name) {
+    return String(Qt.resolvedUrl(name)).replace(/^file:\/\//, "")
+  }
+
   function saveState() {
-    stateFile.setText(Api.serializeState({
+    if (stateWriteProc.running) stateWriteProc.running = false
+    stateWriteProc.stdinEnabled = true
+    stateWriteProc.payload = Api.serializeState({
       apiBase: root.apiBase,
       token: root.token,
       user: root.user
-    }))
-    root.lockStateFile()
-  }
-
-  function lockStateFile() {
-    if (stateLockProc.running) stateLockProc.running = false
-    stateLockProc.command = ["chmod", "600", stateFile.path]
-    stateLockProc.running = true
+    })
+    stateWriteProc.command = ["/usr/bin/python3", pluginFile("secure-write.py"), stateFile.path]
+    stateWriteProc.running = true
   }
 
   function applyState(raw) {
@@ -191,12 +195,30 @@ Panel {
   }
 
   function request(kind, spec) {
-    if (requestProc.running) requestProc.running = false
-    root.requestKind = kind
+    var config = Api.curlConfig(spec)
+    if (!config) {
+      root.errorText = "Could not build a safe request."
+      return
+    }
+    root.requestGen += 1
+    root.pendingRequest = { kind: kind, config: config, gen: root.requestGen }
     root.busy = true
     root.errorText = ""
+    if (requestProc.running) {
+      requestProc.running = false
+      return
+    }
+    root.startPendingRequest()
+  }
+
+  function startPendingRequest() {
+    var job = root.pendingRequest
+    if (!job || job.gen !== root.requestGen) return
+    root.pendingRequest = null
+    root.activeGen = job.gen
+    root.requestKind = job.kind
     requestProc.stdinEnabled = true
-    requestProc.payload = Api.curlConfig(spec)
+    requestProc.payload = job.config
     requestProc.command = Api.curlCommand()
     requestProc.running = true
   }
@@ -221,7 +243,7 @@ Panel {
   function refreshIdeas() {
     root.request("ideas", {
       url: apiUrl("/api/omani/ideas", {
-        sort: root.sortMode,
+        sort: Api.safeSort(root.sortMode),
         limit: 40
       }),
       token: root.token
@@ -229,17 +251,21 @@ Panel {
   }
 
   function openIdea(ideaId) {
+    var path = Api.ideaPath(ideaId, "")
+    if (!path) return
     root.request("idea", {
-      url: apiUrl("/api/omani/ideas/" + ideaId),
+      url: apiUrl(path),
       token: root.token
     })
   }
 
   function voteIdea(ideaId) {
+    var path = Api.ideaPath(ideaId, "/vote")
+    if (!path) return
     if (root.requireAuth({ type: "vote", ideaId: ideaId })) return
     root.request("vote", {
       method: "POST",
-      url: apiUrl("/api/omani/ideas/" + ideaId + "/vote"),
+      url: apiUrl(path),
       token: root.token
     })
   }
@@ -248,10 +274,12 @@ Panel {
     if (!root.idea) return
     var body = commentField.text
     if (!body) return
+    var path = Api.ideaPath(root.idea._id, "/comments")
+    if (!path) return
     if (root.requireAuth({ type: "comment", ideaId: root.idea._id, body: body })) return
     root.request("comment", {
       method: "POST",
-      url: apiUrl("/api/omani/ideas/" + root.idea._id + "/comments"),
+      url: apiUrl(path),
       token: root.token,
       body: { body: body }
     })
@@ -330,21 +358,23 @@ Panel {
   }
 
   function applyIdea(next) {
-    if (!next || !next._id) return
-    if (root.featured && root.featured._id === next._id) root.featured = next
+    var idea = Api.parseIdea(next)
+    if (!idea) return
+    if (root.featured && root.featured._id === idea._id) root.featured = idea
     var rows = root.ideas.slice()
     for (var i = 0; i < rows.length; i++) {
-      if (rows[i]._id === next._id) {
-        rows[i] = Object.assign({}, rows[i], next)
+      if (rows[i]._id === idea._id) {
+        rows[i] = idea
         break
       }
     }
     root.ideas = rows
-    if (root.idea && root.idea._id === next._id)
-      root.idea = Object.assign({}, root.idea, next)
+    if (root.idea && root.idea._id === idea._id)
+      root.idea = Object.assign({}, root.idea, idea)
   }
 
   function handleResponse(raw) {
+    if (root.activeGen !== root.requestGen) return
     var result = Api.parseCurl(raw)
     var kind = root.requestKind
     root.busy = false
@@ -373,20 +403,27 @@ Panel {
       return
     }
 
-    if (kind === "featured") root.featured = result.data
+    if (kind === "featured") root.featured = Api.parseFeatured(result.data)
     else if (kind === "ideas") {
-      root.ideas = result.data || []
+      root.ideas = Api.parseIdeaList(result.data)
       root.selectedIndex = Model.clampIndex(root.selectedIndex, root.visibleIdeas.length)
     } else if (kind === "idea") {
-      root.idea = result.data
+      var opened = Api.parseIdea(result.data)
+      if (!opened) {
+        root.errorText = "That idea could not be shown."
+        return
+      }
+      root.idea = opened
       root.screen = "detail"
       root.selectedIndex = 0
       commentField.text = ""
     } else if (kind === "vote") root.applyIdea(result.data)
     else if (kind === "comment") {
-      if (root.idea) {
+      var comment = Api.parseComment(result.data)
+      if (root.idea && comment) {
         var comments = (root.idea.comments || []).slice()
-        comments.push(result.data)
+        if (comments.length >= 100) comments = comments.slice(comments.length - 99)
+        comments.push(comment)
         root.idea = Object.assign({}, root.idea, {
           comments: comments,
           commentCount: (root.idea.commentCount || 0) + 1
@@ -396,21 +433,38 @@ Panel {
       }
       commentField.text = ""
     } else if (kind === "submit") {
+      var created = Api.parseIdea(result.data)
+      if (!created) {
+        root.errorText = "The idea was saved, but could not be shown."
+        return
+      }
       root.composeTitle = ""
       root.composeBody = ""
       titleField.text = ""
       bodyField.text = ""
-      root.idea = Object.assign({}, result.data, { comments: [] })
+      root.idea = Object.assign({}, created, { comments: [] })
       root.screen = "detail"
     } else if (kind === "captcha") {
-      root.captchaId = result.data && result.data._id ? result.data._id : ""
-      root.captchaImage = result.data && result.data.image ? result.data.image : ""
+      var captcha = Api.parseCaptcha(result.data)
+      root.captchaId = captcha._id
+      root.captchaImage = captcha.image
     } else if (kind === "login" || kind === "register") {
-      root.token = result.data && result.data.token ? result.data.token : ""
+      var session = Api.parseSession(result.data)
+      if (!session.token) {
+        root.errorText = "Sign-in did not return a valid session."
+        root.requestCaptcha()
+        return
+      }
+      root.token = session.token
       root.saveState()
       root.requestIdentity()
     } else if (kind === "identity") {
-      root.user = result.data
+      var user = Api.parseUser(result.data)
+      if (!user) {
+        root.signOut()
+        return
+      }
+      root.user = user
       root.saveState()
       if (root.screen === "login" || root.screen === "register") {
         root.screen = "today"
@@ -496,11 +550,7 @@ Panel {
     id: stateFile
     path: Quickshell.env("HOME") + "/.local/state/omarchy/yooneskh.omani-vote.json"
     watchChanges: true
-    atomicWrites: true
-    onLoaded: {
-      root.applyState(text())
-      root.lockStateFile()
-    }
+    onLoaded: root.applyState(text())
     onLoadFailed: root.saveState()
   }
 
@@ -510,7 +560,10 @@ Panel {
     stdinEnabled: true
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.handleResponse(this.text)
+      onStreamFinished: {
+        if (root.activeGen !== root.requestGen) return
+        root.handleResponse(this.text)
+      }
     }
     stderr: StdioCollector { waitForEnd: true }
     onStarted: {
@@ -518,10 +571,25 @@ Panel {
       payload = ""
       stdinEnabled = false
     }
+    onExited: {
+      if (root.pendingRequest && root.pendingRequest.gen === root.requestGen)
+        root.startPendingRequest()
+    }
   }
 
   Process {
-    id: stateLockProc
+    id: stateWriteProc
+    property string payload: ""
+    stdinEnabled: true
+    onStarted: {
+      write(payload)
+      payload = ""
+      stdinEnabled = false
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0)
+        root.errorText = "Could not save the session securely."
+    }
   }
 
   Timer {
@@ -1507,6 +1575,10 @@ Panel {
       width: Math.min(parent.width - Style.space(12), Style.space(160))
       height: Style.space(48)
       fillMode: Image.PreserveAspectFit
+      cache: false
+      asynchronous: true
+      sourceSize.width: Style.space(160)
+      sourceSize.height: Style.space(48)
       source: captcha.image ? ("data:image/png;base64," + captcha.image) : ""
     }
 
