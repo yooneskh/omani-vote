@@ -54,8 +54,19 @@ Panel {
   property int requestGen: 0
   property int activeGen: 0
   property var pendingRequest: null
+  property int saveGen: 0
+  property string pendingSave: ""
+  property int loadGen: 0
+  property int activeLoadGen: 0
   property int selectedIndex: 0
   property bool cursorActive: false
+  readonly property string homeDir: Quickshell.env("HOME") || ""
+  readonly property var isolatedEnv: ({
+    "PATH": "/usr/bin",
+    "HOME": homeDir,
+    "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt",
+    "SSL_CERT_DIR": "/etc/ssl/certs"
+  })
 
   readonly property string label: featured ? ("✦ " + featured.voteCount) : "✦"
   readonly property string tooltipText: featured ? (Model.ideaName(featured) || "Omani Vote") : "Omani Vote"
@@ -108,15 +119,50 @@ Panel {
     return String(Qt.resolvedUrl(name)).replace(/^file:\/\//, "")
   }
 
+  function stateHelperCommand(mode) {
+    return ["/usr/bin/python3", pluginFile("secure-write.py"), mode, root.homeDir]
+  }
+
+  function loadState() {
+    root.loadGen += 1
+    if (stateReadProc.running) {
+      stateReadProc.running = false
+      return
+    }
+    root.startPendingLoad()
+  }
+
+  function startPendingLoad() {
+    root.activeLoadGen = root.loadGen
+    stateReadProc.clearEnvironment = true
+    stateReadProc.environment = root.isolatedEnv
+    stateReadProc.command = root.stateHelperCommand("read")
+    stateReadProc.running = true
+  }
+
   function saveState() {
-    if (stateWriteProc.running) stateWriteProc.running = false
-    stateWriteProc.stdinEnabled = true
-    stateWriteProc.payload = Api.serializeState({
+    root.saveGen += 1
+    root.pendingSave = Api.serializeState({
       apiBase: root.apiBase,
       token: root.token,
       user: root.user
     })
-    stateWriteProc.command = ["/usr/bin/python3", pluginFile("secure-write.py"), stateFile.path]
+    if (stateWriteProc.running) {
+      stateWriteProc.running = false
+      return
+    }
+    root.startPendingSave()
+  }
+
+  function startPendingSave() {
+    if (!root.pendingSave) return
+    var payload = root.pendingSave
+    root.pendingSave = ""
+    stateWriteProc.stdinEnabled = true
+    stateWriteProc.payload = payload
+    stateWriteProc.clearEnvironment = true
+    stateWriteProc.environment = root.isolatedEnv
+    stateWriteProc.command = root.stateHelperCommand("write")
     stateWriteProc.running = true
   }
 
@@ -219,6 +265,8 @@ Panel {
     root.requestKind = job.kind
     requestProc.stdinEnabled = true
     requestProc.payload = job.config
+    requestProc.clearEnvironment = true
+    requestProc.environment = root.isolatedEnv
     requestProc.command = Api.curlCommand()
     requestProc.running = true
   }
@@ -547,17 +595,18 @@ Panel {
   }
 
   FileView {
-    id: stateFile
-    path: Quickshell.env("HOME") + "/.local/state/omarchy/yooneskh.omani-vote.json"
+    id: stateWatch
+    path: root.homeDir + "/.local/state/omarchy/yooneskh.omani-vote.json"
     watchChanges: true
-    onLoaded: root.applyState(text())
-    onLoadFailed: root.saveState()
+    printErrors: false
+    onFileChanged: root.loadState()
   }
 
   Process {
     id: requestProc
     property string payload: ""
     stdinEnabled: true
+    clearEnvironment: true
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -581,26 +630,48 @@ Panel {
     id: stateWriteProc
     property string payload: ""
     stdinEnabled: true
+    clearEnvironment: true
     onStarted: {
       write(payload)
       payload = ""
       stdinEnabled = false
     }
     onExited: function(exitCode) {
+      if (root.pendingSave) {
+        root.startPendingSave()
+        return
+      }
       if (exitCode !== 0)
         root.errorText = "Could not save the session securely."
     }
   }
+
+  Process {
+    id: stateReadProc
+    clearEnvironment: true
+    stdout: StdioCollector {
+      id: stateReadOut
+      waitForEnd: true
+    }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(exitCode) {
+      if (root.activeLoadGen !== root.loadGen) {
+        root.startPendingLoad()
+        return
+      }
+      if (exitCode === 0) root.applyState(stateReadOut.text)
+      else if (exitCode === 2) root.saveState()
+      else root.errorText = "Could not read the session securely."
+    }
+  }
+
+  Component.onCompleted: root.loadState()
 
   Timer {
     interval: 5 * 60 * 1000
     repeat: true
     running: true
     onTriggered: root.refreshFeatured()
-  }
-
-  Component.onCompleted: {
-    if (root.token) root.refreshSession()
   }
 
   IpcHandler {
@@ -1287,6 +1358,7 @@ Panel {
               id: commentField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 500
               placeholderText: "Write a comment"
               onAccepted: root.submitComment()
               Keys.onPressed: function(event) {
@@ -1323,6 +1395,7 @@ Panel {
               id: titleField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 80
               placeholderText: "A short title"
               onTextChanged: root.composeTitle = text
               onAccepted: bodyField.forceActiveFocus()
@@ -1344,6 +1417,7 @@ Panel {
               id: bodyField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 2000
               placeholderText: "Optional"
               onTextChanged: root.composeBody = text
               onAccepted: root.submitIdea()
@@ -1386,6 +1460,7 @@ Panel {
               id: loginUserField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 80
               placeholderText: "Username"
               onTextChanged: root.loginUsername = text
               onAccepted: loginPassField.forceActiveFocus()
@@ -1402,6 +1477,7 @@ Panel {
               width: parent.width
               foreground: root.foreground
               password: true
+              maximumLength: 256
               placeholderText: "Password"
               onTextChanged: root.loginPassword = text
               onAccepted: loginCaptchaField.forceActiveFocus()
@@ -1422,6 +1498,7 @@ Panel {
               id: loginCaptchaField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 80
               placeholderText: "Captcha"
               onTextChanged: root.captchaCode = text
               onAccepted: root.submitLogin()
@@ -1468,6 +1545,7 @@ Panel {
               id: registerNameField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 80
               placeholderText: "Name"
               onTextChanged: root.registerName = text
               onAccepted: registerUserField.forceActiveFocus()
@@ -1483,6 +1561,7 @@ Panel {
               id: registerUserField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 80
               placeholderText: "Username"
               onTextChanged: root.registerUsername = text
               onAccepted: registerPassField.forceActiveFocus()
@@ -1499,6 +1578,7 @@ Panel {
               width: parent.width
               foreground: root.foreground
               password: true
+              maximumLength: 256
               placeholderText: "Password"
               onTextChanged: root.registerPassword = text
               onAccepted: registerCaptchaField.forceActiveFocus()
@@ -1519,6 +1599,7 @@ Panel {
               id: registerCaptchaField
               width: parent.width
               foreground: root.foreground
+              maximumLength: 80
               placeholderText: "Captcha"
               onTextChanged: root.captchaCode = text
               onAccepted: root.submitRegister()

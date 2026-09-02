@@ -1,6 +1,9 @@
 var DEFAULT_ORIGIN = "https://khoshghadam.com"
+var ALLOWED_ORIGINS = {
+  "https://khoshghadam.com": true,
+  "http://localhost:8080": true
+}
 var UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-var HOST_PATTERN = /^(\[[0-9a-f:]+\]|localhost|[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[1-9][0-9]{0,4})?$/i
 var BASE64_PATTERN = /^[A-Za-z0-9+/]+=*$/
 var ALLOWED_METHODS = { GET: true, POST: true }
 var ALLOWED_SORTS = { hot: true, new: true, top: true }
@@ -10,6 +13,9 @@ var MAX_HEADER = 80
 var MAX_NAME = 80
 var MAX_BODY = 2000
 var MAX_COMMENT = 500
+var MAX_PASSWORD = 256
+var MAX_REQUEST_JSON = 4096
+var MAX_ERROR = 160
 var MAX_IDEAS = 40
 var MAX_COMMENTS = 100
 var MAX_CAPTCHA_IMAGE = 48000
@@ -46,13 +52,22 @@ function cleanText(value, max, allowNewline) {
   return out
 }
 
+function isAllowedOrigin(value) {
+  return !!ALLOWED_ORIGINS[value]
+}
+
 function pinOrigin(raw) {
-  var value = String(raw || "").replace(/\/$/, "")
-  if (!value || hasControl(value) || value.indexOf("@") !== -1 || value.indexOf("\\") !== -1)
-    return DEFAULT_ORIGIN
-  var match = value.match(/^(https?):\/\/([^\/?#]+)(?:[\/?#].*)?$/i)
-  if (!match || !HOST_PATTERN.test(match[2])) return DEFAULT_ORIGIN
-  return match[1].toLowerCase() + "://" + match[2]
+  var value = String(raw || "").replace(/\/+$/, "")
+  return isAllowedOrigin(value) ? value : DEFAULT_ORIGIN
+}
+
+function isAllowedUrl(url) {
+  if (!url || hasControl(url)) return false
+  for (var origin in ALLOWED_ORIGINS) {
+    if (!ALLOWED_ORIGINS[origin]) continue
+    if (url === origin || url.indexOf(origin + "/") === 0) return true
+  }
+  return false
 }
 
 function safeToken(value) {
@@ -189,6 +204,7 @@ function joinUrl(base, path, query) {
   if (!suffix || suffix.charAt(0) !== "/" || hasControl(suffix) || suffix.indexOf("\\") !== -1)
     return ""
   var url = origin + suffix
+  if (!isAllowedUrl(url)) return ""
   if (!query) return url
   var parts = []
   for (var key in query) {
@@ -208,9 +224,60 @@ function escapeCurlConfig(value) {
   return String(value).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")
 }
 
+function fieldText(value, max, allowNewline) {
+  var text = String(value == null ? "" : value)
+  if (text.length > max) return null
+  return cleanText(text, max, allowNewline)
+}
+
+function requestBody(body) {
+  if (!body || typeof body !== "object") return ""
+  var out = {}
+  var ideaName = "name" in body && !("username" in body)
+
+  if ("name" in body) {
+    var name = fieldText(body.name, MAX_NAME, false)
+    if (name == null || !name) return ""
+    if (ideaName && name.length < 4) return ""
+    out.name = name
+  }
+
+  if ("username" in body) {
+    var username = fieldText(body.username, MAX_NAME, false)
+    if (username == null || !username) return ""
+    out.username = username
+  }
+
+  if ("password" in body) {
+    var password = String(body.password == null ? "" : body.password)
+    if (!password || password.length > MAX_PASSWORD || hasControl(password)) return ""
+    out.password = password
+  }
+
+  if ("body" in body) {
+    var limit = ideaName ? MAX_BODY : MAX_COMMENT
+    var text = fieldText(body.body, limit, true)
+    if (text == null) return ""
+    if (ideaName) {
+      if (text) out.body = text
+    } else if (text) {
+      out.body = text
+    } else {
+      return ""
+    }
+  }
+
+  var json = JSON.stringify(out)
+  if (!json || json.length > MAX_REQUEST_JSON || hasControl(json)) return ""
+  return json
+}
+
 function curlCommand() {
   return [
-    "curl", "-sS", "--max-time", "8", "--max-filesize", "1048576",
+    "/usr/bin/curl", "-q", "-sS",
+    "--proto", "=https,http",
+    "--max-time", "8",
+    "--max-filesize", "1048576",
     "-w", "\n__STATUS__%{http_code}",
     "-K", "-"
   ]
@@ -219,8 +286,7 @@ function curlCommand() {
 function curlConfig(args) {
   if (!args || !args.url) return ""
   var url = String(args.url)
-  var origin = pinOrigin(url)
-  if (!url || hasControl(url) || url.indexOf(origin) !== 0) return ""
+  if (!isAllowedUrl(url)) return ""
 
   var lines = []
   if (args.method && args.method !== "GET") {
@@ -242,8 +308,8 @@ function curlConfig(args) {
   }
 
   if (args.body !== undefined) {
-    var body = JSON.stringify(args.body)
-    if (!body || hasControl(body)) return ""
+    var body = requestBody(args.body)
+    if (!body) return ""
     lines.push('header = "content-type: application/json"')
     lines.push('data-binary = "' + escapeCurlConfig(body) + '"')
   }
@@ -269,7 +335,11 @@ function parseCurl(raw) {
 
   var error = ""
   if (!(status >= 200 && status < 300)) {
-    error = (data && (data.message || data.statusMessage)) || "Something went wrong."
+    var remote = data && typeof data === "object"
+      ? (data.message || data.statusMessage)
+      : ""
+    error = cleanText(remote || "Something went wrong.", MAX_ERROR, false)
+    if (!error) error = "Something went wrong."
   }
 
   return {
@@ -286,11 +356,14 @@ if (typeof module !== "undefined") {
     parseState: parseState,
     serializeState: serializeState,
     pinOrigin: pinOrigin,
+    isAllowedOrigin: isAllowedOrigin,
+    isAllowedUrl: isAllowedUrl,
     isUuid: isUuid,
     safeToken: safeToken,
     safeSort: safeSort,
     joinUrl: joinUrl,
     ideaPath: ideaPath,
+    requestBody: requestBody,
     curlCommand: curlCommand,
     curlConfig: curlConfig,
     parseCurl: parseCurl,
